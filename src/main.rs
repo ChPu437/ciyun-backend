@@ -1,29 +1,13 @@
 /*
-Demo WebSocket Server from tokio-tungstenite
+Server for ciyun
+TODO:
+  - Upload qoute
+  - SQL Storage
+  - Response qoute request
 */
-
-//! A chat server that broadcasts a message to all connections.
-//!
-//! This is a simple line-based server which accepts WebSocket connections,
-//! reads lines from those connections, and broadcasts the lines to all other
-//! connected clients.
-//!
-//! You can test this out by running:
-//!
-//!     cargo run --example server 127.0.0.1:12345
-//!
-//! And then in another window run:
-//!
-//!     cargo run --example client ws://127.0.0.1:12345/
-//!
-//! You can run the second command in multiple windows and then chat between the
-//! two, seeing the messages from the other client as they're received. For all
-//! connected clients they'll all join the same room and see everyone else's
-//! messages.
 
 use std::{
     collections::HashMap,
-    env,
     io::Error as IoError,
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -38,58 +22,57 @@ use tungstenite::protocol::Message;
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
 
-async fn handle_connection(peer_map: PeerMap, raw_stream: TcpStream, addr: SocketAddr) {
-    println!("Incoming TCP connection from: {}", addr);
+const SERVER_IP: &str = "127.0.0.1";
+const SERVER_PORT: &str = "23333";
+
+static sample_qoutes: [&str; 5] = ["111", "222", "333", "444", "555"];
+
+async fn handler_connection(raw_stream: TcpStream, addr: SocketAddr) {
+    println!("TCP connection from: {}", addr);
 
     let ws_stream = tokio_tungstenite::accept_async(raw_stream)
         .await
         .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", addr);
 
-    // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(addr, tx);
 
     let (outgoing, incoming) = ws_stream.split();
 
-    let broadcast_incoming = incoming.try_for_each(|msg| {
-        println!("Received a message from {}: {}", addr, msg.to_text().unwrap());
-        let peers = peer_map.lock().unwrap();
+    use rand::Rng;
+    let mut rand_gen = rand::thread_rng();
 
-        // We want to broadcast the message to everyone except ourselves.
-        let broadcast_recipients =
-            peers.iter().filter(|(peer_addr, _)| peer_addr != &&addr).map(|(_, ws_sink)| ws_sink);
+    let send_msg = incoming.try_for_each(|msg| {
+        println!(
+            "Received a message from {}: {}",
+            addr,
+            msg.to_text().unwrap()
+        );
 
-        for recp in broadcast_recipients {
-            recp.unbounded_send(msg.clone()).unwrap();
-        }
+        tx.unbounded_send(sample_qoutes[2].clone()).unwrap();
 
         future::ok(())
     });
 
     let receive_from_others = rx.map(Ok).forward(outgoing);
 
-    pin_mut!(broadcast_incoming, receive_from_others);
-    future::select(broadcast_incoming, receive_from_others).await;
+    pin_mut!(send_msg, receive_from_others);
+    future::select(send_msg, receive_from_others).await;
 
     println!("{} disconnected", &addr);
-    peer_map.lock().unwrap().remove(&addr);
 }
 
 #[tokio::main]
 async fn main() -> Result<(), IoError> {
-    let addr = env::args().nth(1).unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let server_addr = format!("{}:{}", SERVER_IP, SERVER_PORT);
+    // let server_state = PeerMap::new(Mutex::new(HashMap::new()));
 
-    let state = PeerMap::new(Mutex::new(HashMap::new()));
-
-    // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind(&addr).await;
+    let try_socket = TcpListener::bind(&server_addr).await;
     let listener = try_socket.expect("Failed to bind");
-    println!("Listening on: {}", addr);
+    println!("Listening on: {}", server_addr);
 
-    // Let's spawn the handling of each connection in a separate task.
-    while let Ok((stream, addr)) = listener.accept().await {
-        tokio::spawn(handle_connection(state.clone(), stream, addr));
+    while let Ok((stream, client_addr)) = listener.accept().await {
+        tokio::spawn(handler_connection(stream, client_addr));
     }
 
     Ok(())

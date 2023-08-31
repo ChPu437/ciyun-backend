@@ -11,4 +11,4 @@ tokio-tungstenite = "0.20.0"
 tokio = {version = "1.32.0", features = ["full"]}
 futures-util = "0.3.28"
 futures-channel = "0.3.28"
-rand = "0.8.5"
+rand = {version = "0.8.5"}

@@ -8,8 +8,8 @@ TODO:
 
 use std::{io::Error as IoError, net::SocketAddr};
 
-use futures_channel::mpsc::unbounded;
-use futures_util::{future, stream::TryStreamExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
+use tungstenite::Message;
 
 use tokio::net::{TcpListener, TcpStream};
 
@@ -20,40 +20,6 @@ const LISTEN_PORT: &str = "23333";
 
 static SAMPLE_QOUTES: [&str; 5] = ["111", "222", "333", "444", "555"];
 
-async fn handler_connection(raw_stream: TcpStream, addr: SocketAddr) {
-    println!("TCP connection from: {}", addr);
-
-    let ws_stream = tokio_tungstenite::accept_async(raw_stream)
-        .await
-        .expect("Error during the websocket handshake occurred");
-    println!("WebSocket connection established: {}", addr);
-
-    let (tx, _rx) = unbounded();
-
-    let (_outgoing, incoming) = ws_stream.split();
-
-    incoming
-        .try_for_each(|msg| {
-            println!(
-                "Received a message from {}: {}",
-                addr,
-                msg.to_text().unwrap()
-            );
-
-            let mut rand = rand::thread_rng();
-
-            let msg_send = SAMPLE_QOUTES[rand.gen_range(0..5)].clone();
-            tx.unbounded_send(msg_send).unwrap();
-            println!("Send message to {}: {}", addr, msg_send);
-
-            future::ok(())
-        })
-        .await
-        .unwrap();
-
-    println!("{} disconnected", &addr);
-}
-
 #[tokio::main]
 async fn main() -> Result<(), IoError> {
     let addr = format!("{}:{}", LISTEN_IP, LISTEN_PORT);
@@ -63,9 +29,37 @@ async fn main() -> Result<(), IoError> {
     let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", addr);
 
+    // We need spawn a dedicated instance for every request, async-ly.
     while let Ok((stream, addr)) = listener.accept().await {
         tokio::spawn(handler_connection(stream, addr));
     }
 
     Ok(())
+}
+
+async fn handler_connection(raw_stream: TcpStream, addr: SocketAddr) {
+    println!("TCP connection from: {}", addr);
+
+    let ws_stream = tokio_tungstenite::accept_async(raw_stream)
+        .await
+        .expect("Error during the websocket handshake occurred");
+    println!("WebSocket connection established: {}", addr);
+
+    let (mut msg_send, mut msg_recv) = ws_stream.split();
+
+    let msg = msg_recv.next().await.unwrap().unwrap().to_string();
+    println!("Received a message from {}: {}", addr, msg);
+
+    // ThreadRng cannot be send through threads safely, thus we use OsRng instead.
+    let mut rand = rand::rngs::OsRng::default();
+    let msg = SAMPLE_QOUTES[rand.gen_range(0..5)].to_string();
+
+    // TODO: use match exp to deal with variable request
+    msg_send.send(Message::Text(msg.clone())).await.unwrap();
+    println!("Send message to {}: {}", addr, msg);
+
+    // when using "for_each", we need to manually close the connection
+    // or to use one shot instead?
+
+    println!("{} disconnected", &addr);
 }
